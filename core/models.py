@@ -11,6 +11,7 @@ class Station:
     type: str = "residential"
     capacity: int = 30
     waiting: int = 0
+    connected: bool = False
 
 @dataclass
 class Line:
@@ -34,3 +35,4 @@ class World:
     lines: Dict[str, Line] = field(default_factory=dict)
     passengers: Dict[str, Passenger] = field(default_factory=dict)
     tick: int = 0
+
