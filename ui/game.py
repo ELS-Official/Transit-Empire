@@ -1,5 +1,6 @@
 from __future__ import annotations
 import sys
+import random
 from core.models import World
 from core import simulation
 
