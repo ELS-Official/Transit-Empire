@@ -5,9 +5,30 @@ import random
 from .models import Line, Passenger, Station, World
 
 
+STATION_TYPES = [
+    "Suburbs",
+    "City Centre",
+    "Rural",
+    "Industrial",
+    "Commercial",
+]
+
+
+def generate_station_name(counter: int) -> str:
+    alphabet = [chr(ord('a') + i) for i in range(26)]
+    letter = alphabet[counter % 26]
+    suffix = counter // 26
+    if suffix == 0:
+        return letter
+    return f"{letter}{suffix}"
+
+
 def spawn_station(world: World, id_: str):
     x, y = random.randint(50, 600), random.randint(50, 400)
-    station = Station(id=id_, x=x, y=y)
+    station_type = random.choice(STATION_TYPES)
+    station_name = generate_station_name(world.station_name_counter)
+    world.station_name_counter += 1
+    station = Station(id=id_, x=x, y=y, type=station_type, name=station_name)
     world.stations[station.id] = station
 
 
@@ -119,4 +140,5 @@ def tick(world: World):
         spawn_passenger(world, passenger_id)
 
     # TODO: simulate passenger movement on lines
+
 

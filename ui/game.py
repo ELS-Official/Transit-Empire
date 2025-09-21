@@ -25,6 +25,7 @@ END_HANDLE_CAP_HALF_WIDTH = 10
 END_HANDLE_HIT_RADIUS = 14
 SEGMENT_HANDLE_RADIUS = 6
 SEGMENT_HANDLE_HIT_RADIUS = 12
+EDGE_OFFSET_DISTANCE = 8
 HOVER_COLOR = (255, 255, 255)
 DEFAULT_STATION_COLOR = (200, 200, 200)
 CONNECTED_STATION_COLOR = (0, 0, 0)
@@ -33,6 +34,30 @@ CONNECTED_STATION_COLOR = (0, 0, 0)
 def lighten_color(color, factor: float = 0.6):
     """Return a lightened version of the given RGB color."""
     return tuple(min(255, int(c + (255 - c) * factor)) for c in color)
+
+
+def draw_station_panel(surface, station, font):
+    import pygame
+
+    lines = [
+        f"Station {station.name}",
+        f"Type: {station.type}",
+        f"Passengers: {station.waiting}/{station.capacity}",
+    ]
+    padding = 12
+    line_height = font.get_linesize()
+    width = max(font.size(line)[0] for line in lines) + padding * 2
+    height = line_height * len(lines) + padding * 2
+    panel_rect = pygame.Rect(16, surface.get_height() - height - 16, width, height)
+
+    pygame.draw.rect(surface, (28, 30, 44), panel_rect)
+    pygame.draw.rect(surface, (90, 120, 200), panel_rect, 2)
+
+    y = panel_rect.top + padding
+    for line in lines:
+        text_surf = font.render(line, True, (235, 235, 245))
+        surface.blit(text_surf, (panel_rect.left + padding, y))
+        y += line_height
 
 
 def station_at_position(world: World, pos: tuple[int, int], radius: int = STATION_SELECT_RADIUS) -> Station | None:
@@ -46,7 +71,7 @@ def station_at_position(world: World, pos: tuple[int, int], radius: int = STATIO
     return None
 
 
-def build_end_handle(line_id: str, origin: Station, neighbor: Station, color, *, is_start: bool):
+def build_end_handle(line_id: str, origin: Station, neighbor: Station, color, *, is_start: bool, offset: float = 0.0):
     dx = origin.x - neighbor.x
     dy = origin.y - neighbor.y
     distance = math.hypot(dx, dy)
@@ -56,16 +81,20 @@ def build_end_handle(line_id: str, origin: Station, neighbor: Station, color, *,
     dir_x = dx / distance
     dir_y = dy / distance
 
+    perp_x, perp_y = -dir_y, dir_x
+
+    offset_x = perp_x * offset
+    offset_y = perp_y * offset
+
     stem_inner = (
-        origin.x + dir_x * STATION_DRAW_RADIUS,
-        origin.y + dir_y * STATION_DRAW_RADIUS,
+        origin.x + dir_x * STATION_DRAW_RADIUS + offset_x,
+        origin.y + dir_y * STATION_DRAW_RADIUS + offset_y,
     )
     stem_outer = (
-        origin.x + dir_x * (STATION_DRAW_RADIUS + END_HANDLE_STEM_LENGTH),
-        origin.y + dir_y * (STATION_DRAW_RADIUS + END_HANDLE_STEM_LENGTH),
+        origin.x + dir_x * (STATION_DRAW_RADIUS + END_HANDLE_STEM_LENGTH) + offset_x,
+        origin.y + dir_y * (STATION_DRAW_RADIUS + END_HANDLE_STEM_LENGTH) + offset_y,
     )
 
-    perp_x, perp_y = -dir_y, dir_x
     cap_start = (
         stem_outer[0] + perp_x * END_HANDLE_CAP_HALF_WIDTH,
         stem_outer[1] + perp_y * END_HANDLE_CAP_HALF_WIDTH,
@@ -90,8 +119,15 @@ def build_end_handle(line_id: str, origin: Station, neighbor: Station, color, *,
     }
 
 
-def build_segment_handle(line_id: str, left: Station, right: Station, color, index: int):
+def build_segment_handle(line_id: str, left: Station, right: Station, color, index: int, offset: float = 0.0):
     midpoint = ((left.x + right.x) * 0.5, (left.y + right.y) * 0.5)
+    dx = right.x - left.x
+    dy = right.y - left.y
+    length = math.hypot(dx, dy)
+    if length != 0 and offset != 0:
+        perp_x = -dy / length
+        perp_y = dx / length
+        midpoint = (midpoint[0] + perp_x * offset, midpoint[1] + perp_y * offset)
     return {
         "kind": "segment",
         "line_id": line_id,
@@ -104,22 +140,36 @@ def build_segment_handle(line_id: str, left: Station, right: Station, color, ind
     }
 
 
-def build_line_handles(world: World):
+def build_line_handles(world: World, edge_usage: dict[tuple[str, str], list[str]] | None = None):
+    if edge_usage is None:
+        edge_usage = compute_edge_usage(world)
+
     handles = []
     for line in world.lines.values():
         station_objs = [world.stations[sid] for sid in line.stations if sid in world.stations]
         if len(station_objs) < 2:
             continue
 
-        start_handle = build_end_handle(line.id, station_objs[0], station_objs[1], line.color, is_start=True)
-        end_handle = build_end_handle(line.id, station_objs[-1], station_objs[-2], line.color, is_start=False)
+        first_edge = tuple(sorted((line.stations[0], line.stations[1])))
+        first_siblings = edge_usage.get(first_edge, [line.id])
+        first_offset = lane_offset(first_siblings.index(line.id)) if len(first_siblings) > 1 else 0.0
+        start_handle = build_end_handle(line.id, station_objs[0], station_objs[1], line.color, is_start=True, offset=first_offset)
+
+        last_edge = tuple(sorted((line.stations[-2], line.stations[-1])))
+        last_siblings = edge_usage.get(last_edge, [line.id])
+        last_offset = lane_offset(last_siblings.index(line.id)) if len(last_siblings) > 1 else 0.0
+        end_handle = build_end_handle(line.id, station_objs[-1], station_objs[-2], line.color, is_start=False, offset=last_offset)
+
         if start_handle:
             handles.append(start_handle)
         if end_handle:
             handles.append(end_handle)
 
         for index in range(len(station_objs) - 1):
-            segment_handle = build_segment_handle(line.id, station_objs[index], station_objs[index + 1], line.color, index)
+            edge_key = tuple(sorted((line.stations[index], line.stations[index + 1])))
+            siblings = edge_usage.get(edge_key, [line.id])
+            offset_amount = lane_offset(siblings.index(line.id)) if len(siblings) > 1 else 0.0
+            segment_handle = build_segment_handle(line.id, station_objs[index], station_objs[index + 1], line.color, index, offset=offset_amount)
             handles.append(segment_handle)
     return handles
 
@@ -164,6 +214,47 @@ def gather_station_points(world: World, station_ids):
     return points
 
 
+def compute_edge_usage(world: World) -> dict[tuple[str, str], list[str]]:
+    usage: dict[tuple[str, str], list[str]] = {}
+    for line_id, line in world.lines.items():
+        stations = line.stations
+        for idx in range(len(stations) - 1):
+            key = tuple(sorted((stations[idx], stations[idx + 1])))
+            usage.setdefault(key, []).append(line_id)
+    return usage
+
+
+def lane_offset(index: int) -> float:
+    if index == 0:
+        return 0.0
+    steps = (index + 1) // 2
+    direction = 1 if index % 2 == 1 else -1
+    return steps * EDGE_OFFSET_DISTANCE * direction
+
+
+def offset_segment(start: tuple[float, float], end: tuple[float, float], offset: float) -> tuple[tuple[int, int], tuple[int, int]]:
+    if offset == 0:
+        return (
+            (int(round(start[0])), int(round(start[1]))),
+            (int(round(end[0])), int(round(end[1]))),
+        )
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return (
+            (int(round(start[0])), int(round(start[1]))),
+            (int(round(end[0])), int(round(end[1]))),
+        )
+    perp_x = -dy / length
+    perp_y = dx / length
+    ox = perp_x * offset
+    oy = perp_y * offset
+    return (
+        (int(round(start[0] + ox)), int(round(start[1] + oy))),
+        (int(round(end[0] + ox)), int(round(end[1] + oy))),
+    )
+
 def run_game():
     try:
         import pygame
@@ -175,6 +266,7 @@ def run_game():
     width, height = 800, 600
     screen = pygame.display.set_mode((width, height))
     clock = pygame.time.Clock()
+    font = pygame.font.SysFont("arial", 16)
 
     world = World()
     simulation.spawn_station(world, "S1")
@@ -201,6 +293,7 @@ def run_game():
 
     hover_station_id: str | None = None
     hover_handle = None
+    selected_station_id: str | None = None
 
     running = True
     while running:
@@ -235,6 +328,10 @@ def run_game():
                     cursor_pos = event.pos
                     handle = handle_at_position(handles_for_events, event.pos)
                     station = station_at_position(world, event.pos)
+                    if station:
+                        selected_station_id = station.id
+                    elif not handle:
+                        selected_station_id = None
                     if handle:
                         dragging = True
                         if handle["kind"] == "end":
@@ -287,6 +384,7 @@ def run_game():
                     insert_anchor_left = None
                     insert_anchor_right = None
                     insert_target_station = None
+                    selected_station_id = None
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1 and dragging:
                     if drag_mode == "new":
@@ -346,16 +444,31 @@ def run_game():
 
         screen.fill((20, 20, 28))
 
-        for line in world.lines.values():
+        edge_usage = compute_edge_usage(world)
+
+        for line_id, line in world.lines.items():
             station_ids = [sid for sid in line.stations if sid in world.stations]
             if len(station_ids) < 2:
                 continue
             draw_color = line.color
             if drag_mode == "insert" and insert_line_id == line.id:
                 draw_color = lighten_color(line.color)
-            points = gather_station_points(world, station_ids)
-            if len(points) >= 2:
-                pygame.draw.lines(screen, draw_color, False, points, LINE_WIDTH)
+            for idx in range(len(station_ids) - 1):
+                start_station = world.stations[station_ids[idx]]
+                end_station = world.stations[station_ids[idx + 1]]
+                edge_key = tuple(sorted((station_ids[idx], station_ids[idx + 1])))
+                siblings = edge_usage.get(edge_key, [line.id])
+                if len(siblings) > 1:
+                    offset_index = siblings.index(line.id)
+                    offset_amount = lane_offset(offset_index)
+                else:
+                    offset_amount = 0.0
+                offset_start, offset_end = offset_segment(
+                    (start_station.x, start_station.y),
+                    (end_station.x, end_station.y),
+                    offset_amount,
+                )
+                pygame.draw.line(screen, draw_color, offset_start, offset_end, LINE_WIDTH)
 
         handles_for_draw = build_line_handles(world)
         if not dragging:
@@ -426,6 +539,8 @@ def run_game():
             highlight = False
             if hover_station_id == station.id:
                 highlight = True
+            if selected_station_id == station.id:
+                highlight = True
             if drag_mode == "new" and station.id in active_line_stations:
                 highlight = True
             if drag_mode == "extend":
@@ -447,9 +562,25 @@ def run_game():
                     )
                     pygame.draw.circle(screen, (255, 200, 100), jittered, 3)
 
+        if selected_station_id:
+            station = world.stations.get(selected_station_id)
+            if station:
+                draw_station_panel(screen, station, font)
+            else:
+                selected_station_id = None
+
         pygame.display.flip()
 
     pygame.quit()
     sys.exit(0)
+
+
+
+
+
+
+
+
+
 
 
